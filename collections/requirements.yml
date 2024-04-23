@@ -1,0 +1,6 @@
+# Install HashiCorp Vault lookup plugin community.hashi\_vault
+collections:
+- community.vmware
+- vmware.vmware_rest
+- amazon.aws
+- community.hashi_vault

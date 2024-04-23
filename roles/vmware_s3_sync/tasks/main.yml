@@ -1,0 +1,66 @@
+# Make sure folder local_temp_directory exists
+- name: Create local_temp_directory
+  file:
+    path: "{{ local_temp_directory }}"
+    state: directory
+    mode: '0755'
+
+- name: Create local_temp_directory for downloaded files
+  file:
+    path: "{{ local_download_temp_directory }}"
+    state: directory
+    mode: '0755'
+
+# get content library id from name stored in "library_name" variable  using vmware_content_library_info
+- name: Get List of Content Libraries
+  community.vmware.vmware_content_library_info:
+    hostname: "{{ lookup('env', 'VMWARE_HOST') }}"
+    username: "{{ lookup('env', 'VMWARE_USER') }}"
+    password: "{{ lookup('env', 'VMWARE_PASSWORD') | default(omit) }}"
+    validate_certs: no
+  register: content_libs_ids
+
+# Loop over IDs and add all the infor in "content_library_info" variable.
+- name: Get information about each content library
+  community.vmware.vmware_content_library_info:
+    hostname: "{{ lookup('env', 'VMWARE_HOST') }}"
+    username: "{{ lookup('env', 'VMWARE_USER') }}"
+    password: "{{ lookup('env', 'VMWARE_PASSWORD') | default(omit)  }}"
+    library_id: "{{ item }}"
+  delegate_to: localhost
+  register: library_info
+  loop: "{{ content_libs_ids.content_libs }}"
+
+- name: Find library ID by library name
+  set_fact:
+    target_library_id: "{{ item.item }}"
+  loop: "{{ library_info.results }}"
+  when: item.content_lib_details[0].library_name == content_library_name
+  no_log: true
+
+# List itens in the content library using vmware_content_library_item_info and store the result in "content_library_items" variable
+- name: List all items in the content library
+  vmware.vmware_rest.content_library_item_info:
+    vcenter_validate_certs: no
+    vcenter_hostname: "{{ lookup('env', 'VMWARE_HOST') }}"
+    vcenter_username: "{{ lookup('env', 'VMWARE_USER') }}"
+    vcenter_password: "{{ lookup('env', 'VMWARE_PASSWORD') | default(omit)  }}"
+    library_id: "{{ target_library_id }}"
+  register: content_library_items
+
+# Download library items
+- name: Download library items and upload to S3
+  include_tasks: process_item.yml
+  loop: "{{ content_library_items.value }}"
+  loop_control:
+    loop_var: library_item
+  vars:
+    library_item_id: "{{ library_item.id }}"
+    library_item_name: "{{ library_item.name }}"
+  when: download_all or library_item.name in library_items_to_download
+
+# Run pyton script to update S3 bucket
+- name: Run Python script with arguments
+  script: scripts/make_vcsp_2018.py -n "{{ content_library_name }}" -t s3 -p "{{ s3_bucket_name}}/{{ s3_bucket_folder }}"
+  args:
+    executable: python3

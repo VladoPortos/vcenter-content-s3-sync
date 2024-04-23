@@ -1,0 +1,142 @@
+# First create session using uri and store the result in "login" variable
+- name: Login to the vCenter instance
+  uri:
+    url: 'https://{{ lookup("env", "VMWARE_HOST") }}/api/session'
+    force_basic_auth: yes
+    method: POST
+    user: '{{ lookup("env", "VMWARE_USER") }}'
+    password: '{{ lookup("env", "VMWARE_PASSWORD") | default(omit) }}'
+    status_code: 201
+    validate_certs: no
+  register: login
+
+# Generate a client token UUID before the loop
+- set_fact:
+    client_token: "{{ 99999999999999999999999999999999 | random | to_uuid }}"
+
+- name: Calculate future time
+  set_fact:
+    expiration_time: "{{ lookup('pipe', 'date -u -d \"+1 hour\" +\"%Y-%m-%dT%H:%M:%SZ\"') }}"
+
+- name: Create download session
+  uri:
+    url: 'https://{{ lookup("env", "VMWARE_HOST") }}/api/content/library/item/download-session'
+    method: POST
+    force_basic_auth: yes
+    headers:
+      vmware-api-session-id: "{{ login.json }}"
+      client_token: "{{ client_token }}"
+    body_format: json
+    body:
+      library_item_id: "{{ library_item_id }}"
+      #expiration_time: "{{ expiration_time }}"
+      state: "ACTIVE"
+    status_code: 201
+    return_content: yes
+    validate_certs: no
+  register: download_session_data
+
+- name: List files in the download session
+  uri:
+    url: 'https://{{ lookup("env", "VMWARE_HOST") }}/api/content/library/item/download-session/{{ download_session_data.json }}/file'
+    method: GET
+    force_basic_auth: yes
+    headers:
+      vmware-api-session-id: "{{ login.json }}"
+      client_token: "{{ client_token }}"
+    return_content: yes
+    status_code: 200
+    validate_certs: no
+  register: item_files
+
+# Prepare each file in the download session
+- name: Prepare file for download
+  uri:
+    url: 'https://{{ lookup("env", "VMWARE_HOST") }}/api/content/library/item/download-session/{{ download_session_data.json }}/file?action=prepare'
+    method: POST
+    force_basic_auth: yes
+    headers:
+      vmware-api-session-id: "{{ login.json }}"
+      client_token: "{{ client_token }}"
+    body_format: json
+    body: {"file_name": "{{ item_file.name }}"}
+    status_code: 200
+    validate_certs: no
+  loop: "{{ item_files.json }}"
+  loop_control:
+    loop_var: item_file
+
+- name: Get file download information
+  uri:
+    url: 'https://{{ lookup("env", "VMWARE_HOST") }}/api/content/library/item/download-session/{{ download_session_data.json }}/file'
+    method: GET
+    force_basic_auth: yes
+    headers:
+      vmware-api-session-id: "{{ login.json }}"
+      client_token: "{{ client_token }}"
+    return_content: yes
+    validate_certs: no
+  register: download_info
+  until: download_info.json | selectattr('status', 'equalto', 'PREPARED') | list | length == download_info.json | length
+  retries: 10
+  delay: 5
+
+# create folder for downloaded files
+- name: Create folder for downloaded files
+  file:
+    path: "{{ local_temp_directory }}/{{ library_item_name }}"
+    state: directory
+    mode: 0755
+
+# Get sorted download information where .ovf file is prioritized, for some reason if the ovf is last I get 404 for the last file.
+- name: Get sorted download information
+  set_fact:
+    sorted_download_info: "{{ download_info.json | sort(attribute='name', reverse=True) }}"
+
+- name: Download each file one by one and extend the session after each download
+  include_tasks: download_file.yml
+  vars:
+    item: "{{ file_item }}"
+    folder_name: "{{ library_item_name }}"
+  loop: "{{ sorted_download_info }}"
+  loop_control:
+    loop_var: file_item
+    index_var: loop_index
+  when: file_item.status == 'PREPARED'
+  register: downloaded_files
+
+- name: Delete session
+  uri:
+    url: "https://{{ lookup('env', 'VMWARE_HOST') }}/api/content/library/item/download-session/{{ download_session_data.json }}"
+    method: DELETE
+    force_basic_auth: yes
+    headers:
+      vmware-api-session-id: "{{ login.json }}"
+      client_token: "{{ client_token }}"
+    status_code: 204
+    validate_certs: no
+
+# loop over files in {{ local_temp_directory }}/{{ folder_name }}/  and upload to s3 bucket
+- name: Gather list of all files to upload
+  find:
+    paths: "{{ local_temp_directory }}/{{ library_item_name }}"
+    patterns: '*'
+    file_type: file
+  register: files_to_upload
+
+- name: Upload files to S3
+  amazon.aws.aws_s3:
+    bucket: "{{ s3_bucket_name }}"
+    object: "{{ s3_bucket_folder }}/{{ library_item_name }}/{{ item.path | basename }}"
+    src: "{{ item.path }}"
+    mode: put
+    overwrite: different
+  loop: "{{ files_to_upload.files }}"
+  loop_control:
+    label: "{{ item.path }}"
+
+# Delete local files
+- name: Delete local files
+  file:
+    path: "{{ local_temp_directory }}/{{ library_item_name }}"
+    state: absent

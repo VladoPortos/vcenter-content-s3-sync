@@ -1,0 +1,13 @@
+---
+- name: Automate vCenter Content Library to S3
+  hosts: all
+  gather_facts: false
+  vars:
+    content_library_name: "Customer Content Library"
+    s3_bucket_name: "s3-customercontentlibrary"
+    s3_bucket_folder: "Content-Library"
+    local_temp_directory: "/tmp/content-library"
+    local_download_temp_directory: "/tmp/content-library-download"
+    download_all: true
+  roles:
+    - role: vmware_s3_sync

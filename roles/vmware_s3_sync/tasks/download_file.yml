@@ -1,0 +1,24 @@
+- name: Calculate progress
+  set_fact:
+    progress: "{{ ((loop_index | float + 1) / (sorted_download_info | length) * 100) | round(0, 'floor') | int if loop_index is not none and sorted_download_info is not none else 0 }}"
+
+# - name: Replace vCenter hostname in the download URL
+#   set_fact:
+#     modified_download_url: "{{ item.download_endpoint.uri | replace('vcenter.sddc-3-220-199-174.vmwarevmc.com', lookup('env', 'VMWARE_HOST')) }}"
+
+- name: Run the Python download and keep-alive script
+  ansible.builtin.script: scripts/download.py
+  environment:
+    # MODIFIED_DOWNLOAD_URL: "{{ modified_download_url }}"
+    MODIFIED_DOWNLOAD_URL: "{{ item.download_endpoint.uri }}"
+    LOCAL_TEMP_DIRECTORY: "{{ local_temp_directory }}"
+    FOLDER_NAME: "{{ folder_name }}"
+    ITEM_NAME: "{{ item.name }}"
+    LOCAL_DOWNLOAD_TEMP_DIRECTORY: "{{ local_download_temp_directory }}"
+    VMWARE_HOST: "{{ lookup('env', 'VMWARE_HOST') }}"
+    DOWNLOAD_SESSION_DATA: "{{ download_session_data.json }}"
+    LOGIN_JSON: "{{ login.json }}"
+    CLIENT_TOKEN: "{{ client_token }}"
+    KEEPALIVE_PROGRESS: "{{ progress }}"
+  args:
+    executable: python3

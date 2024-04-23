@@ -1,0 +1,15 @@
+- name: Get information about content library
+  community.vmware.vmware_content_library_info:
+    library_id: "{{ library_id }}"
+  delegate_to: localhost
+  register: library_info
+
+- name: Check if library name matches and set library_id
+  set_fact:
+    target_library_id: "{{ library_id }}"
+  when: library_info.content_lib_details[0].library_name == content_library_name
+
+- name: Fail to break the loop
+  fail:
+    msg: "Breaking the loop as the library with name '{{ content_library_name }}' has been found."
+  when: library_info.content_lib_details[0].library_name == content_library_name
